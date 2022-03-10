@@ -1,19 +1,26 @@
+import asyncio
 import datetime
 import json
 import os
+import time
+import tracemalloc
 
+import aiohttp
 import requests
 
 from src.config.settings import CATEGORIES_RIGLA
+from src.services.logger import logger
+from .utils import chunks_regions
+from src.services.client import async_post
 
 
 cookies = {
-        "PHPSESSID": "b607f4b1f0346324759878139794b932",
-        "popmechanic_sbjs_migrations": "popmechanic_1418474375998=1|||1471519752600=1|||1471519752605=1",
-        "private_content_version": "6e7e5f46faf100cac593bcd7ef24025b",
-        "quoteId": "2ea6a214c66c020f125aa3c669b00388",
-        "regionSuggested": "1",
-    }
+    "PHPSESSID": "b607f4b1f0346324759878139794b932",
+    "popmechanic_sbjs_migrations": "popmechanic_1418474375998=1|||1471519752600=1|||1471519752605=1",
+    "private_content_version": "6e7e5f46faf100cac593bcd7ef24025b",
+    "quoteId": "2ea6a214c66c020f125aa3c669b00388",
+    "regionSuggested": "1",
+}
 headers = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:97.0) Gecko/20100101 Firefox/97.0",
     "X-APP": "WEB",
@@ -21,11 +28,12 @@ headers = {
 }
 
 
-def parses_data(
+async def parses_data(
         req_url: str,
         category_id: int,
         category_name: str,
         page: int,
+        session: aiohttp.ClientSession,
 ):
     data = {
         "query": 'query categoryProducts($pageSize: Int!, '
@@ -60,16 +68,19 @@ def parses_data(
         "variables": {"pageSize": 100, "currentPage": page}
     }
 
-    response = requests.post(
-        f"{req_url}/graphql",
+    response_text = await async_post(
+        url=f"{req_url}/graphql",
         json=data,
         cookies=cookies,
-        headers=headers
+        headers=headers,
+        session=session
     )
+    response = json.loads(response_text)
 
-    data_json = response.json().get("data").get("products").get("items")
+    data_json = response.get("data").get("products").get("items")
     if not data_json:
         return []
+
     products: list = list()
     for item in data_json:
         specs = list()
@@ -97,46 +108,90 @@ def parses_data(
     return products
 
 
-def get_products_rigla():
-    base_path = "data/rigla"
-    with open(f"{base_path}/categories/categories.json", "r") as file:
-        regions = json.load(file)
+async def get_products_rigla(
+        session: aiohttp.ClientSession,
+        req_url: str,
+        base_path: str
+):
 
-    for req_url in regions:
-        reg_name = req_url.split("/")[2].split(".")[0]
-        print(f"Регион: {reg_name}")
+    reg_name = req_url.split("/")[2].split(".")[0]
+    print(f"Регион: {reg_name}")
 
-        root_path = f"{base_path}/parses_data_{datetime.datetime.now()}/{reg_name}".replace(" ", "_")
-        if not os.path.exists(root_path):
-            os.makedirs(root_path)
+    root_path = f"{base_path}/parses_data/{reg_name}".replace(" ", "_")
+    if not os.path.exists(root_path):
+        os.makedirs(root_path)
 
-        products_category: list = []
+    products_category: list = []
 
-        for category_id in CATEGORIES_RIGLA:
-            category_name = CATEGORIES_RIGLA.get(category_id)
-            print(f"Категория: {category_name}")
+    for category_id in CATEGORIES_RIGLA:
+        category_name = CATEGORIES_RIGLA.get(category_id)
+        print(f"Категория: {category_name}")
 
-            for page in range(1000):
-                if page == 0:
-                    continue
+        for page in range(1000):
+            if page == 0:
+                continue
 
+            try:
                 # возвращает список товаров с 1 страницы
-                products_data = parses_data(
+                products_data = await parses_data(
                     req_url=req_url,
                     category_id=category_id,
                     category_name=category_name,
                     page=page,
+                    session=session
                 )
-                if not products_data:
-                    print(f"Категория {category_name} закончилась. Товаров спаршено: {len(products_data)}")
-                    break
-                products_category += products_data
-                print(f"Страница {page}")
+            except Exception as e:
+                print(e)
+                continue
+            print(f"Len products = {len(products_data)}")
 
-            # save data to JSON files
-            cat = category_name.replace(" ", "_").lower()
-            with open(f"{root_path}/{cat}.json", "w") as file:
-                json.dump(products_category, file, indent=2, ensure_ascii=False)
+            if not products_data:
+                print(f"Категория {category_name} закончилась.")
+                break
+            products_category += products_data
+            print(f"Страница {page}")
+
+        # save data to JSON files
+        cat = category_name.replace(" ", "_").lower()
+        with open(f"{root_path}/{cat}.json", "w") as file:
+            json.dump(products_category, file, indent=2,
+                      ensure_ascii=False)
 
 
+async def helper_parses(
+        session: aiohttp.ClientSession,
+        regs_url: list,
+        base_path: str
+):
+    for req_url in regs_url:
+        await get_products_rigla(
+            session=session,
+            req_url=req_url,
+            base_path=base_path
+        )
 
+
+async def gather_data(session: aiohttp.ClientSession):
+    base_path = "data/rigla"
+    with open(f"{base_path}/categories/regions.json", "r") as file:
+        regions = json.load(file)
+
+    regs = chunks_regions(regions=regions)
+
+    base_path += f'/{str(datetime.datetime.now()).replace(" ", "_")}'
+
+    tasks = list()
+    for regs_url in regs:
+        task = asyncio.create_task(
+            helper_parses(
+                session=session, regs_url=regs_url, base_path=base_path
+            )
+        )
+        tasks.append(task)
+    print(f"Тасок создано -  {len(tasks)}")
+    await asyncio.gather(*tasks)
+
+
+async def run_parser():
+    async with aiohttp.ClientSession() as session:
+        await gather_data(session=session)
