@@ -10,6 +10,7 @@ from src.tvoydom.parser.utils import format_categories
 
 async def main():
     await run_parser()
+    print("#готоводело")
 
 
 if __name__ == '__main__':

@@ -127,7 +127,7 @@ async def get_products_rigla(
         category_name = CATEGORIES_RIGLA.get(category_id)
         print(f"Категория: {category_name}")
 
-        for page in range(1000):
+        for page in range(10):
             if page == 0:
                 continue
 
@@ -176,19 +176,17 @@ async def gather_data(session: aiohttp.ClientSession):
     with open(f"{base_path}/categories/regions.json", "r") as file:
         regions = json.load(file)
 
-    regs = chunks_regions(regions=regions)
+    regs = await chunks_regions(regions=regions)
 
     base_path += f'/{str(datetime.datetime.now()).replace(" ", "_")}'
 
     tasks = list()
     for regs_url in regs:
-        task = asyncio.create_task(
-            helper_parses(
-                session=session, regs_url=regs_url, base_path=base_path
-            )
-        )
+        task = asyncio.create_task(helper_parses(
+            session=session, regs_url=regs_url, base_path=base_path
+        ))
         tasks.append(task)
-    print(f"Тасок создано -  {len(tasks)}")
+    print(f"Тасок создано - {len(tasks)}")
     await asyncio.gather(*tasks)
 
 
