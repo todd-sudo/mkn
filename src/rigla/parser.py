@@ -190,6 +190,6 @@ async def gather_data(session: aiohttp.ClientSession):
     await asyncio.gather(*tasks)
 
 
-async def run_parser():
+async def run_parser_rigla():
     async with aiohttp.ClientSession() as session:
         await gather_data(session=session)
